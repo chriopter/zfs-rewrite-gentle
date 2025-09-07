@@ -1,8 +1,8 @@
 # zfs-rewrite-gentle
 
-After a pool expansion, old blocks stay on their original vdevs, leaving allocation uneven.
+After RAIDZ vdev expansion, existing blocks keep their old layout and don’t benefit from the new stripe width.  
+This reduces space efficiency until blocks are rewritten with the wider geometry.  
 
-This can waste space and hurt performance until data is rewritten across the pool.  
-`zfs rewrite` rewrites files without modification, applying current compression/checksum settings.
+`zfs rewrite` refreshes files in place, applying the current record/parity layout and dataset properties.  
 
-This script automates rewrites during off-hours (03:00–06:00) to keep TrueNAS usable.  
+This script automates rewrites during configured off-hours (03:00–06:00) to avoid making TrueNAS unusable.  
