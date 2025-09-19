@@ -1,10 +1,9 @@
 #!/bin/sh
 #
-# ZFS rewrite runner with time window
-# -----------------------------------
+# ZFS rewrite runner with time window (KISS)
+#
 # Requirements:
-#   - Create a list of directories to process:
-#       sudo find /mnt/Data -mindepth 2 -maxdepth 2 -type d | sort > /root/rewrite_targets.txt
+#   sudo find /mnt/Data -mindepth 2 -maxdepth 2 -type d | sort > /root/rewrite_targets.txt
 #
 # Behavior:
 #   - Loops indefinitely
@@ -13,40 +12,53 @@
 #   - Only runs between 03:00–06:00 (local time)
 #
 
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
 LIST="/root/rewrite_targets.txt"
 LOG="/root/zfs-rewrite.log"
-POOL="Data"                  # ZFS pool/dataset name
-MOUNTPOINT="/mnt/Data"       # mountpoint of the pool/dataset
-WINDOW_START=3               # hour (inclusive)
-WINDOW_END=6                 # hour (exclusive)
+POOL="Data"
+MOUNTPOINT="/mnt/Data"
+WINDOW_START=3   # inclusive
+WINDOW_END=6     # exclusive
 
-while true; do
+ts(){ date '+%Y-%m-%d %H:%M:%S'; }
+log(){ printf '[%s] %s\n' "$(ts)" "$*" >>"$LOG" 2>/dev/null || printf '[%s] %s\n' "$(ts)" "$*"; }
+in_window(){ H="$(date +%H 2>/dev/null || echo 99)"; case "$H" in ''|*[!0-9]*) return 1;; esac; [ "$H" -ge "$WINDOW_START" ] && [ "$H" -lt "$WINDOW_END" ]; }
+
+while :; do
     # stop if list is empty
     if [ ! -s "$LIST" ]; then
-        echo "[`date -Is`] List is empty, exiting." | tee -a "$LOG"
+        log "List is empty, exiting."
         exit 0
     fi
 
-    HOUR=$(date +%H)
+    if in_window; then
+        DIR="$(head -n1 "$LIST")"
 
-    if [ "$HOUR" -ge "$WINDOW_START" ] && [ "$HOUR" -lt "$WINDOW_END" ]; then
-        DIR=$(head -n1 "$LIST")
+        log "START rewriting $DIR"
+        OUT="$(zfs rewrite -rv "$DIR" 2>&1 || true)"
+        log "$OUT"
 
-        echo "[`date -Is`] START rewriting $DIR" | tee -a "$LOG"
-        zfs rewrite -rv "$DIR" 2>&1 | tee -a "$LOG"
+        # retry once if EINTR
+        echo "$OUT" | grep -q 'Interrupted system call' && {
+            log "Retry EINTR $DIR"
+            OUT="$(zfs rewrite -rv "$DIR" 2>&1 || true)"
+            log "$OUT"
+        }
 
-        echo "[`date -Is`] zfs list ($POOL):" | tee -a "$LOG"
-        zfs list | awk -v pool="$POOL" '$1 == pool {print}' | tee -a "$LOG"
+        log "zfs list ($POOL):"
+        zfs list -o name,used,avail,refer,mountpoint 2>/dev/null | awk -v p="$POOL" '$1==p{print}' | while read -r l; do log "$l"; done
 
-        echo "[`date -Is`] zpool list ($POOL):" | tee -a "$LOG"
-        zpool list | awk -v pool="$POOL" '$1 == pool {print}' | tee -a "$LOG"
+        log "zpool list ($POOL):"
+        zpool list 2>/dev/null | awk -v p="$POOL" '$1==p{print}' | while read -r l; do log "$l"; done
 
-        echo "[`date -Is`] DONE $DIR" | tee -a "$LOG"
+        log "DONE $DIR"
 
         # remove first line from list
         tail -n +2 "$LIST" > "$LIST.tmp" && mv "$LIST.tmp" "$LIST"
     else
-        echo "[`date -Is`] Outside time window (allowed ${WINDOW_START}:00–${WINDOW_END}:00), sleeping 5m" | tee -a "$LOG"
+        log "Outside time window (${WINDOW_START}:00–${WINDOW_END}:00), sleeping 5m"
         sleep 300
     fi
 done
